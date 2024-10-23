@@ -219,6 +219,11 @@ names(df.final)[12] = "disease"
 df.final = df.final[, c(ncol(df), 1:(ncol(df)-1))]
 str(df.final)
 ```
+```{r}
+# for shiny apping latter, i will save the processed dataset, to not overcomplicate app logic.
+saveRDS(df.final, file = "data.rds")
+```
+
 </details>
 
 ## Data analysis
@@ -333,6 +338,7 @@ These coefficients clearly indicate that increase in any of the variables would 
 5. ECG (st slope, oldpeak)
 This effectively means that hospitals can only perform a single test (ECG) combined with patient questionnaire to assess presence (and risks) of the heart disease.
 
+## Validation
 Now, let's validate our methodology. We will do a classical test-train split for validation.
 ```{r}
 train = sample(1:nrow(x), size=0.7*nrow(x))
