@@ -1,0 +1,217 @@
+---
+title: "APL Individual project"
+author: "Vitalii Fishchuk"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+Disclaimer: AI has been used in this work.
+Purpose: inquiry instrument, fixing bugs, documentation reference.
+Model: ChatGPT-4o.
+
+
+## Introduction
+This project examines risk of heart diseases in relation to 11 predictors, hoping to establish clear causality and build an effective classification model, which would allow to pinpoint variables with the highest effect on the heart disease risk. This can later be used to provide medical recommendations based on the patients data and pinpoint heart diseases in the earlier stages.
+
+# Dataset
+The dataset for this project was obtained from Kaggle (https://www.kaggle.com/datasets/mexwell/heart-disease-dataset?resource=download), featuring a combination of 5 most used heart disease datasets (Cleveland, Hungarian, Switzerland, Long Beach VA and Statlog (Heart) data set.). The dataset contains 1190 instances and 11 features - more than enough for both data analysis and machine learning.
+
+# Problem
+I will perform exploratory data analysis followed by machine learning focused on variable selection, to understand relationships between the predictors and the outcome (heart disease) and building a small, but effective prediction model. The problem at hand is a typical classification problem with binary outcome (2 classes), so I will utulize log regression and random forest models.
+
+## Some technical steps: libraries, data loading, cleaning, pre-processing.
+<details>
+<summary>Click to view code</summary>
+```{r}
+# load required libraries
+library(dplyr)
+library(glmnet)
+library(pROC)
+library(MASS)        
+library(caret)
+library(boot)
+library(randomForest)
+library(doParallel)
+library(survival)
+library(survminer)
+library(corrplot)
+
+# set seed for reproducibility
+set.seed(42)
+```
+
+```{r}
+# loading data
+df = read.csv("../data/heart_disease.csv", sep = ",", header = TRUE, stringsAsFactors = FALSE)
+summary(df)
+```
+```{r}
+# Get a list of unique values
+lapply(df, unique)
+```
+```{r}
+# check for missings and remove duplicates
+num_missings = colSums(is.na(df))
+cat("Number of missings per column:", num_missings, "\n")
+num_dupes = sum(duplicated(df))
+cat("Number of duplicated rows:", num_dupes, "\n")
+# remove duplicates
+df.nodupes = df[!duplicated(df), ]
+cat("Number of rows after removing duplicates:", nrow(df.nodupes), "\n")
+```
+```{r}
+# print columns
+cat(colnames(df.nodupes))
+```
+```{r}
+# Check whether dataset description from Kaggle matches the dataset
+expected_values <- list(
+  sex = c(0, 1),  # 0 = female, 1 = male
+  chest.pain.type = c(1, 2, 3, 4),  # 1 = typical angina, 2 = atypical angina, etc.
+  fasting.blood.sugar = c(0, 1),  # 1 = true, 0 = false
+  resting.ecg = c(0, 1, 2),  # 0 = normal, 1 = ST-T wave abnormality, etc.
+  exercise.angina = c(0, 1),  # 1 = yes, 0 = no
+  ST.slope = c(1, 2, 3),  # 1 = upsloping, 2 = flat, 3 = downsloping
+  target = c(0, 1)  # 0 = normal, 1 = heart disease
+)
+
+check_values <- function(column_name, data, expected_vals) {
+  actual_values <- unique(data[[column_name]])
+  if (!all(actual_values %in% expected_vals)) {
+    cat(paste("Unexpected values found in column:", column_name, "\n"))
+    cat("Actual values:", actual_values, "\n")
+    cat("Expected values:", expected_vals, "\n\n")
+  } else {
+    cat(paste("All values in column", column_name, "are valid.\n"))
+  }
+}
+
+for (col in names(expected_values)) {
+  check_values(col, df.nodupes, expected_values[[col]])
+}
+```
+```{r}
+# there is a problem with st.slope (it has 4 values and dataset description describes it twice, with different subsets each time (0, 1, 2) vs (1, 2, 3), while the dataset itself has (1, 2, 3, 4))
+# let's inspect the issue closer
+table(df.nodupes$ST.slope)
+```
+```{r}
+# There is only 1 zero, hence, it's obviously a typo/mistake, let's drop it.
+df.nodupes = df.nodupes[df.nodupes$ST.slope != 0, ]
+for (col in names(expected_values)) {
+  check_values(col, df.nodupes, expected_values[[col]])
+}
+```
+
+```{r}
+# the variables in the dataset are already encoded in numeric/binary form, so there is no need for factorization, but it would be nice to attach
+# text labels for binary/categorical variables, so I will do factorization. I will also ensure that variables are treated as numeric by R.
+set_numeric = function(df){
+  df$sex = as.numeric(trimws(df$sex))
+  df$chest.pain.type = as.numeric(trimws(df$chest.pain.type))
+  df$fasting.blood.sugar = as.numeric(trimws(df$fasting.blood.sugar))
+  df$resting.ecg = as.numeric(trimws(df$resting.ecg))
+  df$exercise.angina = as.numeric(trimws(df$exercise.angina))
+  df$ST.slope = as.numeric(trimws(df$ST.slope))
+  df$target = as.numeric(trimws(df$target))
+  return(df)
+}
+
+factorize = function(df){
+  df$sex = factor(df$sex, 
+                  levels = c(0, 1), 
+                  labels = c("Female", "Male"))
+  
+  df$chest.pain.type = factor(df$chest.pain.type, 
+                              levels = c(1, 2, 3, 4), 
+                              labels = c("Typical angina", "Atypical angina", "Non-anginal", "Asymptomatic"))
+  
+  df$fasting.blood.sugar = factor(df$fasting.blood.sugar, 
+                                  levels = c(0, 1), 
+                                  labels = c("Smaller 120 mg/dl", "Larger 120 mg/dl"))
+  
+  df$resting.ecg = factor(df$resting.ecg, 
+                          levels = c(0, 1, 2), 
+                          labels = c("Normal", "Wave abnormality", "Hypertrophy"))
+  
+  df$exercise.angina = factor(df$exercise.angina, 
+                              levels = c(0, 1), 
+                              labels = c("No", "Yes"))
+  
+  
+  df$ST.slope = factor(df$ST.slope, 
+                       levels = c(1, 2, 3), 
+                       labels = c("Upsloping", "Flat", "Downsloping"))
+  
+  df$target = factor(df$target, 
+                      levels = c(0, 1), 
+                      labels = c("Normal", "Heart Disease"))
+  
+  return(df)
+}
+
+preprocess_data = function(df) {
+  df = set_numeric(df)
+  df = factorize(df)
+  return(df)
+}
+
+df.cleaned = preprocess_data(df.nodupes)
+str(df.cleaned)
+```
+```{r}
+# let's examine for anomalies (no data analysis yet, just checking for data quality)
+num_cols = ncol(df.cleaned)  # Total number of columns in the dataset
+
+for (col in names(df.cleaned)) {
+  
+  if (is.numeric(df.cleaned[[col]])) {
+    # Create boxplot for numeric variables
+    boxplot(df.cleaned[[col]], main = col, col = "lightblue")
+  } else if (is.factor(df.cleaned[[col]])) {
+    hist(as.numeric(df.cleaned[[col]]), main = col, col = "lightgreen", 
+         breaks = length(levels(df.cleaned[[col]])), xaxt = "n", xlab=col)
+    axis(1, at = 1:length(levels(df.cleaned[[col]])), labels = levels(df.cleaned[[col]]))
+    print(NA)
+  }
+}
+```
+```{r}
+# resting blood pressure and cholesterol have outliers at 0, which is near impossible in real life. Let's investigate.
+bp_0 = sum(df.cleaned$resting.bp.s == 0)
+chol_0 = sum(df.cleaned$cholesterol == 0)
+cat("Number of data points with resting.bp.s == 0:", bp_0, "\n")
+cat("Number of data points with cholesterol == 0:", chol_0, "\n")
+```
+```{r}
+# There are 172 entries where cholesterol is 0:) Nice. From this point we have 2 options:
+# 1. drop rows with chol=0
+# 2. impute based on the rest.
+# let's quickly check correlation, to see if cholesterol depends on the rest (we will ofc drop zeroes)
+df.cor_no_chol0 = df.cleaned[!(df.cleaned$cholesterol == 0 | df.cleaned$resting.bp.s == 0), ]
+numeric_columns = df.cor_no_chol0[sapply(df.cor_no_chol0, is.numeric)]
+cor_matrix = cor(numeric_columns, use = "complete.obs")
+```
+
+```{r, fig.height=6, fig.width=6}
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.cex = 0.8)
+```
+```{r}
+# there is no correlation, just as i suspected, so deducing (imputing) chol from the rest of the variables is ifeasible. Ofc we can use other patients for imputation (trying to find combinations with similar values), but there are not enough variables for that (only 4 numeric besides cholesterol, the rest 6 are categorical with 2-4 values). Considering that we have more data than needed (11 predictors, almost 100 entries per predictor), the best solution would be to discard outliers with 0.
+
+# we can now obtain our final dataset.
+df.final = df.cleaned[!(df.cleaned$cholesterol == 0 | df.cleaned$resting.bp.s == 0), ]
+str(df.final)
+```
+</details>
+
+
