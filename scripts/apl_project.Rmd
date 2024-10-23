@@ -18,6 +18,8 @@ Disclaimer: AI has been used in this work.
 Purpose: inquiry instrument, fixing bugs, documentation reference.
 Model: ChatGPT-4o.
 
+Disclaimer 2: Part of the code (mainly lasso) is based on the assignment 3 of our group, and that code was based on the lectures. You can find parts of the code almost identical, as I do not see the reason of writing stuff twice, rather adapting and incorporating feedback. However, just in case, i leave this remark here, so it is not counted as plagiarism (technically of my own work).
+
 
 ## Introduction
 This project examines risk of heart diseases in relation to 11 predictors, hoping to establish clear causality and build an effective classification model, which would allow to pinpoint variables with the highest effect on the heart disease risk. This can later be used to provide medical recommendations based on the patients data and pinpoint heart diseases in the earlier stages.
@@ -358,14 +360,17 @@ lasso.max.par.sd = lasso.cv$lambda.1se
 lasso.pred = predict(lasso, s=lasso.max.par, newx=x_test, type="response")
 lasso.pred.sd = predict(lasso, s=lasso.max.par.sd, newx=x_test, type="response")
 
+lasso.class = ifelse(lasso.pred > 0.5, 1, 0)
+lasso.class.sd = ifelse(lasso.pred.sd > 0.5, 1, 0)
+
 results <- tibble(type = c("best lambda", "best lambda within 1sd of train error"),
 error = rep(NA,2),
 n.par = rep(NA,2),
 lambda = rep(NA,2),
 predictors = list(NA, NA))
 
-results$error[1] = sqrt(mean((lasso.pred - y_test)^2))
-results$error[2] = sqrt(mean((lasso.pred.sd - y_test)^2))
+results$error[1] = mean(lasso.class != y_test)
+results$error[2] = mean(lasso.class.sd != y_test)
 results$n.par[1] = sum(coef(lasso, s=lasso.max.par) != 0)
 results$n.par[2] = sum(coef(lasso, s=lasso.max.par.sd) != 0)
 results$lambda[1] = lasso.max.par
@@ -415,4 +420,5 @@ plot(roc_1se, main = "ROC Curve for Lambda within 1sd", col = "red", print.auc=T
 ci_1se <- ci.se(roc_1se, boot.n = 1000)
 plot(ci_1se, type = "shape", col = rgb(1, 0, 0, 0.2))
 ```
+Firstly, the performance is excellent and consistent with training error (classification error) of around ~0.13-0.14 for 0.5 classification threshold. This means that our approach and model can easily distinguish between classes and the performance for the simpler model (6 predictors, 1sd train error lambda) is similar to that of the larger one. Furthermore, we can observe the same list of predictors: age, sex, exercise pain, chest pain asymptomatic, ECG (note that although I've set the same seed, different runs give slightly different predictor lists for lasso, mainly including or excluding age).
 
