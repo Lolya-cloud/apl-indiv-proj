@@ -26,7 +26,7 @@ This project examines risk of heart diseases in relation to 11 predictors, hopin
 The dataset for this project was obtained from Kaggle (https://www.kaggle.com/datasets/mexwell/heart-disease-dataset?resource=download), featuring a combination of 5 most used heart disease datasets (Cleveland, Hungarian, Switzerland, Long Beach VA and Statlog (Heart) data set.). The dataset contains 1190 instances and 11 features - more than enough for both data analysis and machine learning.
 
 # Problem
-I will perform exploratory data analysis followed by machine learning focused on variable selection, to understand relationships between the predictors and the outcome (heart disease) and building a small, but effective prediction model. The problem at hand is a typical classification problem with binary outcome (2 classes), so I will utulize log regression and random forest models.
+I will perform exploratory data analysis followed by machine learning focused on variable selection, to understand relationships between the predictors and the outcome (heart disease) and building a small, but effective prediction model. The problem at hand is a typical classification problem with binary outcome (2 classes), so I will utilize log regression with lasso regularization.
 
 ## Some technical steps: libraries, data loading, cleaning, pre-processing.
 <details>
@@ -44,6 +44,7 @@ library(doParallel)
 library(survival)
 library(survminer)
 library(corrplot)
+library(GGally)
 
 # set seed for reproducibility
 set.seed(42)
@@ -154,7 +155,7 @@ factorize = function(df){
   
   df$target = factor(df$target, 
                       levels = c(0, 1), 
-                      labels = c("Normal", "Heart Disease"))
+                      labels = c("No", "Yes"))
   
   return(df)
 }
@@ -162,6 +163,7 @@ factorize = function(df){
 preprocess_data = function(df) {
   df = set_numeric(df)
   df = factorize(df)
+  
   return(df)
 }
 
@@ -210,8 +212,207 @@ corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.cex 
 
 # we can now obtain our final dataset.
 df.final = df.cleaned[!(df.cleaned$cholesterol == 0 | df.cleaned$resting.bp.s == 0), ]
+# let's also rename target and move it to the first index position for clarity
+names(df.final)[12] = "disease"
+df.final = df.final[, c(ncol(df), 1:(ncol(df)-1))]
 str(df.final)
 ```
 </details>
 
+## Data analysis
+Firstly, let's make my favourite - pairplot:). It will help us to see most of the things we are iterested in initially: distributions, relationships, class separatation by pair-combinations of predictors.
+```{r, fig.width=15, fig.height=15}
+pair_plot_entire_df = function(df) {
+  plot_df = df
+  # Reverse the levels of 'disease'
+  plot_df$disease <- factor(df$disease, levels = c("Yes", "No"))
+  ggpairs(plot_df, 
+          aes(color = disease),
+          legend = 1) +  
+    theme_minimal() +
+    labs(title = "Pairplot for entire dataframe") +  
+    theme(legend.position = "right", axis.text = element_text(size = 6), axis.title = element_text(size=6))
+}
+
+pair_plot_entire_df(df.final)
+```
+
+The pairplot is a rather big one, but it provides some useful insights. Firstly, we can observe demographics specifics: age approximately normally distributed around ~50 mean; most participants are males and the proportion of sick male patients is way higher (more than half of males got heart disease, compared to app. 1/3 of females). This could potentially indicate problems of the underlying studies, or mean that more males get a heart disease. Most importantly, there is no disbalance between target classes, which means we can proceed directly to machine learning.
+Besides demographics, it's apparent that two classes are separated quite well for some combinations of parameters, leading to belief that the collection of variables at hand might provide enough separation power to clearly discern between target classes. There is way more to be said, but would be too much for the scope of such a small project. (Pairplots are like gold veins, they can provide many insights, that's why they are my favorite).
+
+Note: what is also important from the pairplot, is that all numerical variables except oldpeak are similar to normal distribution (hence, we could try z-scaling later). However, oldpeak is heavily skewed with a center mass near 0, so it cannot be z transformed (i have tested different transformation methods, but none could make it close to normal), so we will have to use robust scalling instead of z-transformation in the downstream pipeline.
+
+## Lasso regression for variable selection
+```{r}
+# lasso regression is sensitive to data scales, so normalization might be a good idea.
+numerical_vars = c("age", "resting.bp.s", "cholesterol", "max.heart.rate", "oldpeak")
+
+scaled = as.data.frame(lapply(df.final[numerical_vars], function(x) {
+  (x - median(x, na.rm = TRUE)) / IQR(x, na.rm = TRUE)
+}))
+
+# Combine scaled numerical variables with the rest of the dataset
+df.final.scaled <- cbind(scaled, df.final[setdiff(names(df.final), numerical_vars)])
+
+
+y = as.numeric(df.final.scaled$disease) - 1
+x = model.matrix(disease~., data=df.final.scaled)[, -1]
+```
+
+
+```{r}
+grid = 10^seq(3, -3, length=100)
+lasso = glmnet(x, y, alpha=1, lambda=grid, family="binomial")
+plot(lasso, xvar = "lambda", label = TRUE)
+```
+
+```{r}
+# Tune lambda cross validating on the entire dataset
+lasso.cv = cv.glmnet(x, y, alpha=1, lambda=grid)
+par(mfrow = c(1, 2))
+plot(lasso.cv)
+plot(lasso.cv, sign.lambda=-1)
+```
+
+```{r}
+lasso.max.par = lasso.cv$lambda.min
+lasso.max.par.sd = lasso.cv$lambda.1se
+
+results <- tibble(type = c("best lambda", "best lambda within 1sd of train error"),
+n.par = rep(NA,2),
+lambda = rep(NA,2),
+predictors = list(NA, NA))
+
+results$n.par[1] = sum(coef(lasso, s=lasso.max.par) != 0)
+results$n.par[2] = sum(coef(lasso, s=lasso.max.par.sd) != 0)
+results$lambda[1] = lasso.max.par
+results$lambda[2] = lasso.max.par.sd
+
+coef_min = coef(lasso, s = lasso.max.par)
+nonzero_coef_indices = which(coef_min != 0)[-1]  # Exclude intercept
+nonzero_predictors = rownames(coef_min)[nonzero_coef_indices]
+
+# For lambda.1se
+coef_1se = coef(lasso, s = lasso.max.par.sd)
+nonzero_coef_indices_1se = which(coef_1se != 0)[-1]  # Exclude intercept
+nonzero_predictors_1se = rownames(coef_1se)[nonzero_coef_indices_1se]
+
+# Add predictors to results tibble
+results$predictors[[1]] = nonzero_predictors
+results$predictors[[2]] = nonzero_predictors_1se
+```
+
+```{r}
+print(results)
+```
+
+```{r}
+print("Best predictors with lambda")
+print(results$predictors[1])
+```
+
+```{r}
+print("Best predictors with 1sd lambda")
+print(results$predictors[2])
+```
+We can clearly see that the most important variables are age, type of chest pain, oldpeak, exercise angina pain, sex and slope of the ST. This subset of variables provides a compromise between train error and lambda (number of variables), hence - a trade-off between number of variables and model accuracy. I would prefer to use the smaller subset, as it clearly tells us the most important factors, while the larger subset (from the smallest lambda possible) might include unnecessary noise (predictors with low impact, which in practice might not be that relevant for the analysis in the medical industry).
+Hence, the smaller subset (corresponding to 1sd lambda) can be considered as main "indicators", or "risk factors". 
+However, we also see quite a big difference between best lambda and best lambda within 1sd interval. During validation we will check the performance difference.
+Now, let's see coefficients of the log regression model, corresponding to these variables, to understand their effect.
+```{r}
+coef(lasso.cv, s = "lambda.1se")
+
+```
+These coefficients clearly indicate that increase in any of the variables would lead to higher risk of heart disease. This confirms my hypothesis that males are more likely to contract the disease, as sexMale has a positive regression coefficient. We can also see that higher age, asymptomatic chest pain, pain during exercises, oldpeak and flat/downsloping st slopes contribute positively to the risk of the heart disease. To not get too deep into the topic, we can just say that oldpeak and st.slope both refer to different parts of ECG(electrocardiogram) graph, so the final set of relevant predictors would be:
+1. patient age
+2. patient gender
+3. presence of asymptomatic chest pain.
+4. presence of angina pain during exercises.
+5. ECG (st slope, oldpeak)
+This effectively means that hospitals can only perform a single test (ECG) combined with patient questionnaire to assess presence (and risks) of the heart disease.
+
+Now, let's validate our methodology. We will do a classical test-train split for validation.
+```{r}
+train = sample(1:nrow(x), size=0.7*nrow(x))
+x_train = x[train,]
+x_test = x[-train,]
+y_train = y[train]
+y_test = y[-train]
+
+grid = 10^seq(3, -3, length=100)
+lasso = glmnet(x_train, y_train, alpha=1, lambda=grid, family="binomial")
+plot(lasso, xvar = "lambda", label = TRUE)
+```
+
+```{r}
+lasso.cv = cv.glmnet(x_train, y_train, alpha=1, lambda=grid)
+par(mfrow = c(1, 2))
+plot(lasso.cv)
+plot(lasso.cv, sign.lambda=-1)
+```
+
+```{r}
+lasso.max.par = lasso.cv$lambda.min
+lasso.max.par.sd = lasso.cv$lambda.1se
+
+lasso.pred = predict(lasso, s=lasso.max.par, newx=x_test, type="response")
+lasso.pred.sd = predict(lasso, s=lasso.max.par.sd, newx=x_test, type="response")
+
+results <- tibble(type = c("best lambda", "best lambda within 1sd of train error"),
+error = rep(NA,2),
+n.par = rep(NA,2),
+lambda = rep(NA,2),
+predictors = list(NA, NA))
+
+results$error[1] = sqrt(mean((lasso.pred - y_test)^2))
+results$error[2] = sqrt(mean((lasso.pred.sd - y_test)^2))
+results$n.par[1] = sum(coef(lasso, s=lasso.max.par) != 0)
+results$n.par[2] = sum(coef(lasso, s=lasso.max.par.sd) != 0)
+results$lambda[1] = lasso.max.par
+results$lambda[2] = lasso.max.par.sd
+
+coef_min = coef(lasso, s = lasso.max.par)
+nonzero_coef_indices = which(coef_min != 0)[-1]  # Exclude intercept
+nonzero_predictors = rownames(coef_min)[nonzero_coef_indices]
+
+# For lambda.1se
+coef_1se = coef(lasso, s = lasso.max.par.sd)
+nonzero_coef_indices_1se = which(coef_1se != 0)[-1]  # Exclude intercept
+nonzero_predictors_1se = rownames(coef_1se)[nonzero_coef_indices_1se]
+
+# Add predictors to results tibble
+results$predictors[[1]] = nonzero_predictors
+results$predictors[[2]] = nonzero_predictors_1se
+
+print(results)
+```
+
+```{r}
+print("Best predictors with lambda")
+print(results$predictors[1])
+```
+
+```{r}
+print("Best predictors with 1sd lambda")
+print(results$predictors[2])
+```
+
+```{r}
+roc_min = roc(y_test, lasso.pred)
+auc_min = auc(roc_min)
+
+roc_1se = roc(y_test, lasso.pred.sd)
+auc_1se = auc(roc_1se)
+
+print(paste("AUC for best lambda:", auc_min))
+print(paste("AUC for best lambda within 1sd of train error:", auc_1se))
+
+par(mfrow = c(1, 2))
+plot(roc_min, main = "ROC Curve for Best Lambda", col = "blue", print.auc=TRUE)
+ci_min <- ci.se(roc_min, boot.n = 1000)
+plot(ci_min, type = "shape", col = rgb(0, 0, 1, 0.2)) 
+plot(roc_1se, main = "ROC Curve for Lambda within 1sd", col = "red", print.auc=TRUE)
+ci_1se <- ci.se(roc_1se, boot.n = 1000)
+plot(ci_1se, type = "shape", col = rgb(1, 0, 0, 0.2))
+```
 
