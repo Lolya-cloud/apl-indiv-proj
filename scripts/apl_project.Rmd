@@ -247,23 +247,12 @@ pair_plot_entire_df(df.final)
 The pairplot is a rather big one, but it provides some useful insights. Firstly, we can observe demographics specifics: age approximately normally distributed around ~50 mean; most participants are males and the proportion of sick male patients is way higher (more than half of males got heart disease, compared to app. 1/3 of females). This could potentially indicate problems of the underlying studies, or mean that more males get a heart disease. Most importantly, there is no disbalance between target classes, which means we can proceed directly to machine learning.
 Besides demographics, it's apparent that two classes are separated quite well for some combinations of parameters, leading to belief that the collection of variables at hand might provide enough separation power to clearly discern between target classes. There is way more to be said, but would be too much for the scope of such a small project. (Pairplots are like gold veins, they can provide many insights, that's why they are my favorite).
 
-Note: what is also important from the pairplot, is that all numerical variables except oldpeak are similar to normal distribution (hence, we could try z-scaling later). However, oldpeak is heavily skewed with a center mass near 0, so it cannot be z transformed (i have tested different transformation methods, but none could make it close to normal), so we will have to use robust scalling instead of z-transformation in the downstream pipeline.
+Note: what is also important from the pairplot, is that all numerical variables except oldpeak are similar to normal distribution (hence, we could try z-scaling later). However, oldpeak is heavily skewed with a center mass near 0, so it cannot be z transformed (i have tested different transformation methods, but none could make it close to normal), so we will have to use robust scalling instead of z-transformation in the downstream pipeline. I later found out that glment does scaling internally, so the scalling part of the code was removed.
 
 ## Lasso regression for variable selection
 ```{r}
-# lasso regression is sensitive to data scales, so normalization might be a good idea.
-numerical_vars = c("age", "resting.bp.s", "cholesterol", "max.heart.rate", "oldpeak")
-
-scaled = as.data.frame(lapply(df.final[numerical_vars], function(x) {
-  (x - median(x, na.rm = TRUE)) / IQR(x, na.rm = TRUE)
-}))
-
-# Combine scaled numerical variables with the rest of the dataset
-df.final.scaled <- cbind(scaled, df.final[setdiff(names(df.final), numerical_vars)])
-
-
-y = as.numeric(df.final.scaled$disease) - 1
-x = model.matrix(disease~., data=df.final.scaled)[, -1]
+y = as.numeric(df.final$disease) - 1
+x = model.matrix(disease~., data=df.final)[, -1]
 ```
 
 
@@ -275,7 +264,7 @@ plot(lasso, xvar = "lambda", label = TRUE)
 
 ```{r}
 # Tune lambda cross validating on the entire dataset
-lasso.cv = cv.glmnet(x, y, alpha=1, lambda=grid)
+lasso.cv = cv.glmnet(x, y, alpha=1, lambda=grid, family="binomial")
 par(mfrow = c(1, 2))
 plot(lasso.cv)
 plot(lasso.cv, sign.lambda=-1)
@@ -322,24 +311,30 @@ print(results$predictors[1])
 print("Best predictors with 1sd lambda")
 print(results$predictors[2])
 ```
-We can clearly see that the most important variables are age, type of chest pain, oldpeak, exercise angina pain, sex and slope of the ST. This subset of variables provides a compromise between train error and lambda (number of variables), hence - a trade-off between number of variables and model accuracy. I would prefer to use the smaller subset, as it clearly tells us the most important factors, while the larger subset (from the smallest lambda possible) might include unnecessary noise (predictors with low impact, which in practice might not be that relevant for the analysis in the medical industry).
-Hence, the smaller subset (corresponding to 1sd lambda) can be considered as main "indicators", or "risk factors". 
-However, we also see quite a big difference between best lambda and best lambda within 1sd interval. During validation we will check the performance difference.
+We can clearly see that the most important variables are age, type of chest pain, oldpeak, exercise angina pain, sex, resting blood pressure and slope of the ST. This subset of variables provides a compromise between train error and lambda (number of variables), hence - a trade-off between number of variables and model accuracy. I would prefer to use the smaller subset, as it clearly tells us the most important factors, while the larger subset (from the smallest lambda possible) might include unnecessary noise (predictors with low impact, which in practice might not be that relevant for the analysis in the medical industry).
+Hence, the smaller subset (corresponding to 1sd lambda) can be considered as main "indicators", or "risk factors". During validation we will check the performance difference between lambdas.
 Now, let's see coefficients of the log regression model, corresponding to these variables, to understand their effect.
 ```{r}
 coef(lasso.cv, s = "lambda.1se")
-
 ```
-These coefficients clearly indicate that increase in any of the variables would lead to higher risk of heart disease. This confirms my hypothesis that males are more likely to contract the disease, as sexMale has a positive regression coefficient. We can also see that higher age, asymptomatic chest pain, pain during exercises, oldpeak and flat/downsloping st slopes contribute positively to the risk of the heart disease. To not get too deep into the topic, we can just say that oldpeak and st.slope both refer to different parts of ECG(electrocardiogram) graph, so the final set of relevant predictors would be:
+These coefficients clearly indicate that increase in any of the variables would lead to higher risk of heart disease (all positive). This confirms my hypothesis that males are more likely to contract the disease, 
+as sexMale has a positive regression coefficient. We can also see that higher age, higher resting blood pressure, asymptomatic chest pain, pain during exercises, oldpeak and flat/downsloping st slopes contribute positively to the risk of the heart disease. 
+To not get too deep into the topic, we can just say that oldpeak and st.slope both refer to different parts of ECG(electrocardiogram) graph, so the final set of relevant predictors would be:
 1. patient age
 2. patient gender
 3. presence of asymptomatic chest pain.
 4. presence of angina pain during exercises.
 5. ECG (st slope, oldpeak)
-This effectively means that hospitals can only perform a single test (ECG) combined with patient questionnaire to assess presence (and risks) of the heart disease.
+6. resting blood pressure.
+This effectively means that hospitals can only perform a single test (ECG) combined with patient in-take questionnaire (including measurements of blood pressure) to assess presence (and risks) of the heart disease.
+
+Now, let's obtain our final model (will be used in the shiny app). The model above obtained from cv is already final, but it is a part of cv object, so we will train it separately with best lambda (i will use 1sd lambda)
+```{r}
+lasso = glmnet(x, y, alpha=1, lambda=lasso.cv$lambda.1se, family="binomial")
+```
 
 ## Validation
-Now, let's validate our methodology. We will do a classical test-train split for validation.
+Let's validate our methodology. We will do a classical test-train split for validation.
 ```{r}
 train = sample(1:nrow(x), size=0.7*nrow(x))
 x_train = x[train,]
@@ -353,7 +348,7 @@ plot(lasso, xvar = "lambda", label = TRUE)
 ```
 
 ```{r}
-lasso.cv = cv.glmnet(x_train, y_train, alpha=1, lambda=grid)
+lasso.cv = cv.glmnet(x_train, y_train, alpha=1, lambda=grid, family = "binomial")
 par(mfrow = c(1, 2))
 plot(lasso.cv)
 plot(lasso.cv, sign.lambda=-1)
@@ -427,4 +422,3 @@ ci_1se <- ci.se(roc_1se, boot.n = 1000)
 plot(ci_1se, type = "shape", col = rgb(1, 0, 0, 0.2))
 ```
 Firstly, the performance is excellent and consistent with training error (classification error) of around ~0.13-0.14 for 0.5 classification threshold. This means that our approach and model can easily distinguish between classes and the performance for the simpler model (6 predictors, 1sd train error lambda) is similar to that of the larger one. Furthermore, we can observe the same list of predictors: age, sex, exercise pain, chest pain asymptomatic, ECG (note that although I've set the same seed, different runs give slightly different predictor lists for lasso, mainly including or excluding age).
-
