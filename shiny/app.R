@@ -4,7 +4,7 @@ library(glmnet)
 library(pROC)
 library(MASS)        
 library(caret)
-
+set.seed(42)
 # functions
 convert_to_numerical = function(df) {
   # Convert 'sex' to 0 and 1
@@ -91,9 +91,28 @@ run_model = function(input.data, lambda) {
   return(result)
 }
 
+validation_auc = function(x, y, lambda) {
+  train_indices = sample(1:nrow(x), size = 0.7 * nrow(x))
+  test_indices = setdiff(1:nrow(x), train_indices)
+  
+  x_train = x[train_indices, ]
+  y_train = y[train_indices]
+  
+  x_test = x[test_indices, ]
+  y_test = y[test_indices]
+  
+  lasso.model = glmnet(x_train, y_train, alpha = 1, lambda = lambda, family = "binomial")
+  
+  pred.matrix = predict(lasso.model, newx = x_test, type = "response", s = lambda)
+  pred = as.vector(pred.matrix)
+  roc = roc(y_test, pred)
+  auc = auc(roc)
+  return(list(roc = roc, auc = auc))
+}
+
 # Shiny UI
 createVisualizationUI = function() {
-  plotOutput("model.plot", height = "1000px")
+  plotOutput("model.plot", height = "900px")
 }
 
 # load and scale original dataset.
@@ -144,9 +163,10 @@ ui = fluidPage(
     ),
     # visual
     mainPanel(
+      sliderInput("lambda", "Regularization strength (L1):", min = 0, max = 0.4, value = 0.1, step = 0.01),
       createVisualizationUI(),
       br(),
-      sliderInput("lambda", "Regularization strength (L1):", min = 0, max = 0.4, value = 0.1, step = 0.01)
+      plotOutput("roc", height = "400px", width = "400px")
     )
   )
 )
@@ -155,6 +175,8 @@ ui = fluidPage(
 server = function(input, output) {
   pred.prob = reactiveVal(NULL)
   model.coeffs = reactiveVal(NULL)
+  roc = reactiveVal(NULL)
+  auc = reactiveVal(NULL)
   
   # obtain inputs, process and pass down to the model function
   observeEvent(input$predict, {
@@ -179,6 +201,12 @@ server = function(input, output) {
     # update display
     pred.prob(model.result$probability)
     model.coeffs(model.result$coefficients)
+    
+    validation.result = validation_auc(x, y, input$lambda)
+    
+    # Store ROC and AUC for plotting
+    roc(validation.result$roc)
+    auc(validation.result$auc)
   })
   
   output$model.plot = renderPlot({
@@ -240,6 +268,33 @@ server = function(input, output) {
       y_mid = (y_pred[i] + y_out) / 2
       # Place coefficient labels above the lines
       text(x_mid, y_mid + 0.2, labels = coef_label, cex = 0.9)
+    }
+  })
+  # validated roc
+  output$roc = renderPlot({
+    if (is.null(roc())) {
+      plot.new()
+      text(0.5, 0.5, "ROC curve will be displayed here after you click 'Predict'", cex = 1)
+    } else {
+      # Extract Sensitivity and Specificity
+      sens = roc()$sensitivities
+      spec = roc()$specificities
+      
+      fpr = 1 - spec
+      plot(fpr, sens, type = "l", col = "#1f77b4", lwd = 2, 
+           main = "ROC Curve",
+           xlab = "1 - Specificity (False Positive Rate)",
+           ylab = "Sensitivity (True Positive Rate)",
+           xlim = c(0, 1),
+           ylim = c(0, 1))
+      
+      abline(a = 0, b = 1, lty = 2, col = "gray")
+      auc_text = paste("AUC =", round(auc(), 4))
+
+      text_x = 0.5 
+      text_y = 0.6  
+      
+      text(text_x, text_y, labels = auc_text, adj = c(0.5, 0), cex = 1.2, col = "black")
     }
   })
   
