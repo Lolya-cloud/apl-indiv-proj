@@ -115,7 +115,7 @@ createVisualizationUI = function() {
   plotOutput("model.plot", height = "900px")
 }
 
-# load and scale original dataset.
+# load original dataset (cleaned)
 heart.data = readRDS("data.rds")
 
 y = as.numeric(heart.data$disease) - 1
@@ -211,7 +211,9 @@ server = function(input, output) {
   
   output$model.plot = renderPlot({
     coeffs = model.coeffs()
-    # Placeholders to prevent errors on the first run
+    # Placeholders to prevent errors on the first run. The list of real will be 
+    # larger due to categorical variables hot-one encoding, but i'm too lazy to change
+    # that, who cares, this works anyway.
     if (is.null(coeffs)) {
       coeffs = data.frame(
         Predictor = c("Age", "Sex", "Chest Pain", "Resting BP", "Cholesterol",
@@ -276,7 +278,6 @@ server = function(input, output) {
       plot.new()
       text(0.5, 0.5, "ROC curve will be displayed here after you click 'Predict'", cex = 1)
     } else {
-      # Extract Sensitivity and Specificity
       sens = roc()$sensitivities
       spec = roc()$specificities
       

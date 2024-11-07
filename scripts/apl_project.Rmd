@@ -22,13 +22,15 @@ Disclaimer 2: Part of the code (mainly lasso) is based on the assignment 3 of ou
 
 
 ## Introduction
-This project examines risk of heart diseases in relation to 11 predictors, hoping to establish clear causality and build an effective classification model, which would allow to pinpoint variables with the highest effect on the heart disease risk. This can later be used to provide medical recommendations based on the patients data and pinpoint heart diseases in the earlier stages.
+This project examines risk of heart diseases in relation to 11 predictors, hoping to establish clear causality and build an effective classification model, which would allow to pinpoint variables with the highest effect on the heart disease risk. This can later be used to provide medical recommendations based on the patients data and pinpoint heart diseases in the earlier stages. The expected use case is doctors using the model to assess probability of a patient having a heart disease right now (or in the near future), hence i do not select a classificaiton threshold, as the decission is made by the doctor. The model only shows probability of a heart disease, maximizing human autonomy and decision making, which is paramount in the healthcare industry.
 
 # Dataset
 The dataset for this project was obtained from Kaggle (https://www.kaggle.com/datasets/mexwell/heart-disease-dataset?resource=download), featuring a combination of 5 most used heart disease datasets (Cleveland, Hungarian, Switzerland, Long Beach VA and Statlog (Heart) data set.). The dataset contains 1190 instances and 11 features - more than enough for both data analysis and machine learning.
 
 # Problem
 I will perform exploratory data analysis followed by machine learning focused on variable selection, to understand relationships between the predictors and the outcome (heart disease) and building a small, but effective prediction model. The problem at hand is a typical classification problem with binary outcome (2 classes), so I will utilize log regression with lasso regularization.
+Why logistic regression with lasso? We have a simple use case with ~10-15 predictors and plenty of data (much more than 10 entries for a predictor). I also want to explore impact of the variables on the probability, as in medical field explainability is a really important factor. I could also use Random Forests, but it would prevent me from making a nice visualization of how predictors interact and contribute to the result (you can extract variable importance from the tree, but that's about it).
+Hence, I needed a simple, interpretable and powerful model. Logistic regression is the best fit and to analyze variable importance we apply L1 penatly. Logistic regression is also relatively quick (compared to random forests and other models), which guarantees high responsivness for the user of the shiny app (running the model over and over, cross validating auc score each time, etc.)
 
 ## Some technical steps: libraries, data loading, cleaning, pre-processing.
 <details>
@@ -402,7 +404,7 @@ print(results$predictors[1])
 print("Best predictors with 1sd lambda")
 print(results$predictors[2])
 ```
-
+But why do you use roc auc? It shows discrimination power between positive and negative instances across all thresholds, which is perfect for our use case. (helping doctors diagnosing/assessing risk of heart diseases). Plus it's a nice way of having only one metric, instead of 4+.
 ```{r}
 roc_min = roc(y_test, lasso.pred)
 auc_min = auc(roc_min)
